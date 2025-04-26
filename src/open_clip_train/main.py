@@ -86,17 +86,27 @@ def main(args):
     if args.name is None:
         # sanitize model name for filesystem / uri use, easier if we don't use / in name as a rule?
         model_name_safe = args.model.replace('/', '-')
-        date_str = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
+        date_str = datetime.now().strftime("%Y%m%d-%H%M%S")
         if args.distributed:
             # sync date_str from master to all ranks
             date_str = broadcast_object(args, date_str)
+        if args.chi:
+            args.lossname = "chi"
+        elif args.spec:
+            args.lossname = "spec"
+        elif args.chizero:
+            args.lossname = "chizero"
+        elif args.siglip:
+            args.lossname = "siglip"
         args.name = '-'.join([
             date_str,
             f"model_{model_name_safe}",
             f"lr_{args.lr}",
             f"b_{args.batch_size}",
-            f"j_{args.workers}",
-            f"p_{args.precision}",
+            f"loss_{args.lossname}",
+            f"lexp_{args.lossexp}",
+            # f"j_{args.workers}",
+            # f"p_{args.precision}",
         ])
 
     resume_latest = args.resume == 'latest'

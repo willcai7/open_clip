@@ -54,10 +54,22 @@ def parse_args(args):
         help="Number of samples in dataset. Required for webdataset if not available in info file.",
     )
     parser.add_argument(
+        "--save-logits",
+        default=False,
+        action="store_true",
+        help="If true, save logits and targets for the val set.",
+    )
+    parser.add_argument(
         "--val-num-samples",
         type=int,
         default=None,
         help="Number of samples in dataset. Useful for webdataset if not available in info file.",
+    )
+    parser.add_argument(
+        "--vary-clip",
+        default=False,
+        action="store_true",
+        help="Whether to use vary clip."
     )
     parser.add_argument(
         "--dataset-type",
@@ -468,6 +480,36 @@ def parse_args(args):
         default=False,
         action="store_true",
         help='Use SigLip (sigmoid) loss.'
+    )
+    parser.add_argument(
+        "--chi",
+        default=False,
+        action="store_true",
+        help='Use Chi loss.'
+    )
+    parser.add_argument(
+        "--lossexp",
+        default=False,
+        action="store_true",
+        help='Use exp similarity.'
+    )
+    parser.add_argument(
+        "--spec",
+        default=False,
+        action="store_true",
+        help='Use spec loss.'
+    )
+    parser.add_argument(
+        "--lossname",
+        type=str,
+        default="clip",
+        help='Name of the loss function to use.'
+    )
+    parser.add_argument(
+        "--chizero",
+        default=False,
+        action="store_true",
+        help='Use chi-zero loss.'
     )
     parser.add_argument(
         "--loss-dist-impl",

@@ -18,6 +18,21 @@ except ImportError:
     hvd = None
 
 
+
+def create_block_diagonal_mask(n: int, k: int, device: torch.device) -> torch.Tensor:
+    # Create an identity matrix of shape (n, n) with Boolean type.
+    # Each 1 in this identity will be replaced by a k x k block of ones.
+    identity_n = torch.eye(n, dtype=torch.bool, device=device)
+    
+    # Create a k x k block of ones (Boolean True values).
+    block = torch.ones((k, k), dtype=torch.bool, device=device)
+    
+    # Use the Kronecker product to form the block diagonal matrix.
+    # The result is a (n*k, n*k) Boolean matrix where each diagonal block is "block"
+    # and the off-diagonal blocks are zeros.
+    mask = torch.kron(identity_n, block)
+    return mask
+
 def gather_features(
         image_features,
         text_features,
@@ -149,6 +164,229 @@ class ClipLoss(nn.Module):
 
         return {"contrastive_loss": total_loss} if output_dict else total_loss
 
+class ChiLoss(nn.Module):
+
+    def __init__(
+            self,
+            local_loss=False,
+            gather_with_grad=False,
+            rank=0,
+            world_size=1,
+            use_horovod=False,
+            loss_exp=False,
+    ):
+        super().__init__()
+        self.local_loss = local_loss
+        self.gather_with_grad = gather_with_grad
+        self.rank = rank
+        self.world_size = world_size
+        self.use_horovod = use_horovod
+        self.loss_exp = loss_exp  
+        # cache state
+        self.prev_num_logits = 0
+        self.labels = {}
+        self.mask = None
+    
+
+    def get_logits(self, image_features, text_features, logit_scale, logit_bias=None):
+
+
+        if self.world_size > 1:
+            all_image_features, all_text_features = gather_features(
+                image_features,
+                text_features,
+                local_loss=self.local_loss,
+                gather_with_grad=self.gather_with_grad,
+                rank=self.rank,
+                world_size=self.world_size,
+                use_horovod=self.use_horovod,
+            )
+
+            if self.local_loss:
+                logits_per_image = logit_scale * image_features @ all_text_features.T
+                logits_per_text = logit_scale * text_features @ all_image_features.T
+            else:
+                logits_per_image = logit_scale * all_image_features @ all_text_features.T
+                logits_per_text = logits_per_image.T
+        else:
+            logits_per_image = logit_scale * image_features @ text_features.T
+            logits_per_text = logit_scale * text_features @ image_features.T
+
+        if logit_bias is not None:
+            logits_per_image += logit_bias
+            logits_per_text += logit_bias
+
+        return logits_per_image, logits_per_text
+
+    def forward(
+            self,
+            image_features,
+            text_features,
+            logit_scale,
+            logit_bias=None,
+            output_dict=False,
+    ):
+        
+        similarity, _ = self.get_logits(image_features, text_features, logit_scale)
+        if self.loss_exp:
+            similarity = torch.exp(similarity)
+        n = similarity.shape[0]
+        diag_similarity = torch.diag(similarity)
+        row_sum = similarity.sum(dim=1) - diag_similarity 
+        col_sum = similarity.sum(dim=0) - diag_similarity
+        row_sq_sum = (torch.pow(similarity,2)).sum(dim=1) - torch.pow(diag_similarity,2)
+        col_sq_sum = (torch.pow(similarity,2)).sum(dim=0) - torch.pow(diag_similarity,2)
+        term1 = 2*(n-1)*row_sq_sum - 2*(torch.pow(row_sum,2)) 
+        term2 = row_sum 
+        term3 = 2*(n-1)*col_sq_sum - 2*(torch.pow(col_sum,2))
+        term4 = col_sum
+        total_loss = (term1+term3)/(4*(n-1)*(n-2)) + (term2+term4)/(n-1) -2*diag_similarity 
+        return {"contrastive_loss": total_loss.mean()} if output_dict else total_loss.mean()
+
+
+class SpecLoss(nn.Module):
+
+    def __init__(
+            self,
+            local_loss=False,
+            gather_with_grad=False,
+            rank=0,
+            world_size=1,
+            use_horovod=False,
+            loss_exp=False,
+    ):
+        super().__init__()
+        self.local_loss = local_loss
+        self.gather_with_grad = gather_with_grad
+        self.rank = rank
+        self.world_size = world_size
+        self.use_horovod = use_horovod
+        self.loss_exp = loss_exp
+        # cache state
+        self.prev_num_logits = 0
+        self.labels = {}
+    
+
+    def get_logits(self, image_features, text_features, logit_scale, logit_bias=None):
+
+
+        if self.world_size > 1:
+            all_image_features, all_text_features = gather_features(
+                image_features,
+                text_features,
+                local_loss=self.local_loss,
+                gather_with_grad=self.gather_with_grad,
+                rank=self.rank,
+                world_size=self.world_size,
+                use_horovod=self.use_horovod,
+            )
+
+            if self.local_loss:
+                logits_per_image = logit_scale * image_features @ all_text_features.T
+                logits_per_text = logit_scale * text_features @ all_image_features.T
+            else:
+                logits_per_image = logit_scale * all_image_features @ all_text_features.T
+                logits_per_text = logits_per_image.T
+        else:
+            logits_per_image = logit_scale * image_features @ text_features.T
+            logits_per_text = logit_scale * text_features @ image_features.T
+
+        if logit_bias is not None:
+            logits_per_image += logit_bias
+            logits_per_text += logit_bias
+
+        return logits_per_image, logits_per_text
+
+    def forward(
+            self,
+            image_features,
+            text_features,
+            logit_scale,
+            logit_bias=None,
+            output_dict=False,
+    ):
+        
+        similarity, _ = self.get_logits(image_features, text_features, logit_scale)
+        if self.loss_exp:
+            similarity = torch.exp(similarity)
+        n = similarity.shape[0]
+        diag_similarity = torch.diag(similarity)
+        row_sum = similarity.sum(dim=1) - diag_similarity 
+        col_sum = similarity.sum(dim=0) - diag_similarity
+        total_loss = torch.pow(row_sum,2)/(n-1) -4*diag_similarity + torch.pow(col_sum,2)/(n-1)
+        return {"contrastive_loss": total_loss.mean()} if output_dict else total_loss.mean()
+
+class ChiZeroLoss(nn.Module):
+
+    def __init__(
+            self,
+            local_loss=False,
+            gather_with_grad=False,
+            rank=0,
+            world_size=1,
+            use_horovod=False,
+            loss_exp=False,
+    ):
+        super().__init__()
+        self.local_loss = local_loss
+        self.gather_with_grad = gather_with_grad
+        self.rank = rank
+        self.world_size = world_size
+        self.use_horovod = use_horovod
+        self.loss_exp = loss_exp
+        # cache state
+        self.prev_num_logits = 0
+        self.labels = {}
+    
+
+    def get_logits(self, image_features, text_features, logit_scale, logit_bias=None):
+
+
+        if self.world_size > 1:
+            all_image_features, all_text_features = gather_features(
+                image_features,
+                text_features,
+                local_loss=self.local_loss,
+                gather_with_grad=self.gather_with_grad,
+                rank=self.rank,
+                world_size=self.world_size,
+                use_horovod=self.use_horovod,
+            )
+
+            if self.local_loss:
+                logits_per_image = logit_scale * image_features @ all_text_features.T
+                logits_per_text = logit_scale * text_features @ all_image_features.T
+            else:
+                logits_per_image = logit_scale * all_image_features @ all_text_features.T
+                logits_per_text = logits_per_image.T
+        else:
+            logits_per_image = logit_scale * image_features @ text_features.T
+            logits_per_text = logit_scale * text_features @ image_features.T
+
+        if logit_bias is not None:
+            logits_per_image += logit_bias
+            logits_per_text += logit_bias
+
+        return logits_per_image, logits_per_text
+
+    def forward(
+            self,
+            image_features,
+            text_features,
+            logit_scale,
+            logit_bias=None,
+            output_dict=False,
+    ):
+        
+        similarity, _ = self.get_logits(image_features, text_features, logit_scale)
+        if self.loss_exp:
+            similarity = torch.exp(similarity)
+        n = similarity.shape[0]
+        diag_similarity = torch.diag(similarity)
+        row_sum = similarity.sum(dim=1) - diag_similarity 
+        col_sum = similarity.sum(dim=0) - diag_similarity
+        total_loss = (torch.pow(row_sum,2) + 2*row_sum)/(n-1) -4*diag_similarity + (torch.pow(col_sum,2) + 2*col_sum)/(n-1) 
+        return {"contrastive_loss": total_loss.mean()} if output_dict else total_loss.mean()
 
 class CoCaLoss(ClipLoss):
     def __init__(

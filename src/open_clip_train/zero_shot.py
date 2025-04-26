@@ -18,10 +18,11 @@ def run(model, classifier, dataloader, args):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision, device_type=device.type)
     input_dtype = get_input_dtype(args.precision)
-
+    total_logits = []
+    total_targets = []
     with torch.inference_mode():
         top1, top5, n = 0., 0., 0.
-        for images, target in tqdm(dataloader, unit_scale=args.batch_size):
+        for i, (images, target) in enumerate(tqdm(dataloader, unit_scale=args.batch_size)):
             images = images.to(device=device, dtype=input_dtype)
             target = target.to(device)
 
@@ -31,6 +32,8 @@ def run(model, classifier, dataloader, args):
                 image_features = output['image_features'] if isinstance(output, dict) else output[0]
                 logits = 100. * image_features @ classifier
 
+                total_logits.append(logits)
+                total_targets.append(target)
             # measure accuracy
             acc1, acc5 = accuracy(logits, target, topk=(1, 5))
             top1 += acc1
@@ -39,6 +42,12 @@ def run(model, classifier, dataloader, args):
 
     top1 = (top1 / n)
     top5 = (top5 / n)
+    if args.save_logits:
+        print(f"Saving dataloader and total_logits for {args.model}")
+        total_logits = torch.cat(total_logits)
+        total_targets = torch.cat(total_targets)
+        torch.save(total_logits, f"total_logits_{args.model}.pt")
+        torch.save(total_targets, f"total_targets_{args.model}.pt")
     return top1, top5
 
 
@@ -76,6 +85,8 @@ def zero_shot_eval(model, data, epoch, args, tokenizer=None):
         top1, top5 = run(model, classifier, data['imagenet-val'].dataloader, args)
         results['imagenet-zeroshot-val-top1'] = top1
         results['imagenet-zeroshot-val-top5'] = top5
+        if args.save_logits:
+            torch.save(data['imagenet-val'].selected_classes, f"selected_classes_{args.model}.pt")
     if 'imagenet-v2' in data:
         top1, top5 = run(model, classifier, data['imagenet-v2'].dataloader, args)
         results['imagenetv2-zeroshot-val-top1'] = top1

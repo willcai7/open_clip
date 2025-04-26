@@ -63,6 +63,7 @@ class DataInfo:
     dataloader: DataLoader
     sampler: DistributedSampler = None
     shared_epoch: SharedEpoch = None
+    selected_classes: np.ndarray = None
 
     def set_epoch(self, epoch):
         if self.shared_epoch is not None:
@@ -119,6 +120,7 @@ def get_imagenet(args, preprocess_fns, split):
     assert split in ["train", "val", "v2"]
     is_train = split == "train"
     preprocess_train, preprocess_val = preprocess_fns
+    selected_classes = None
 
     if split == "v2":
         from imagenetv2_pytorch import ImageNetV2Dataset
@@ -148,6 +150,13 @@ def get_imagenet(args, preprocess_fns, split):
 
         idxs = idxs.astype('int')
         sampler = SubsetRandomSampler(np.where(idxs)[0])
+    elif args.vary_clip:
+        idxs = np.zeros(len(dataset.targets))
+        target_array = np.array(dataset.targets)
+        selected_classes = np.random.choice(1000, size=20, replace=False)
+        for c in selected_classes:
+            idxs[target_array == c] = 1
+        sampler = SubsetRandomSampler(np.where(idxs)[0])
     else:
         sampler = None
 
@@ -158,7 +167,7 @@ def get_imagenet(args, preprocess_fns, split):
         sampler=sampler,
     )
 
-    return DataInfo(dataloader=dataloader, sampler=sampler)
+    return DataInfo(dataloader=dataloader, sampler=sampler, selected_classes=selected_classes)
 
 
 def count_samples(dataloader):
